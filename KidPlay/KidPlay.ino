@@ -27,8 +27,10 @@ uint8_t volume = 20;
 const uint8_t maxVol = 10;
 const uint8_t minVol = 40;
 
-char * fileName[99];
-char tempString[13];
+int curTrack = 0;
+const char * curFolder = "/2";
+
+char * fileName[25];
 byte numberElementsInArray = 0;
 
 // the setup function runs once when you press reset or power the board
@@ -48,33 +50,38 @@ void setup() {
 
 	setVolume(EEPROM.read(adrVol));
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
-
-	//printDirectory(SD.open("/"), 0);
-
-	const char * fon = "1";
-	readFiles(SD.open(fon));
+	
+	File curDir = SD.open(curFolder);
+	readFiles(curDir);
+	printArray();
 	sortFileArray();
-
-	char pBuff[255];
-	sprintf(pBuff, "%s/%s", fon, fileName[0]);
-
-	Serial.print("Playing '");
-	Serial.print(pBuff);
-	Serial.println("'");
-
-	musicPlayer.startPlayingFile(pBuff);
-	Serial.println("Done");
+	printArray();
 }
 
 // the loop function runs over and over again until power down or reset
 void loop() {
-	
+	// play next track if nothing plays
+	if (!musicPlayer.playingMusic && curTrack < numberElementsInArray) {
+		playFile(curTrack);
+		curTrack++;
+	}
+
+	delay(100);
 }
 
-char * joinPath(char * folder, char * file) {
-	char path[255];
-	sprintf(path, "/%s/%s", folder, file);
-	return path;
+void playFile(int num) {
+	if (num > numberElementsInArray) {
+		return;
+	}
+	char f[20];
+
+	sprintf(f, "%s/%s", curFolder, fileName[num]);
+
+	musicPlayer.startPlayingFile(f);
+
+	Serial.print("Playing '");
+	Serial.print(f);
+	Serial.println("'");
 }
 
 void togglePause() {
@@ -99,17 +106,58 @@ void raiseVolume(uint8_t dif) {
 }
 
 void readFiles(File root) {
-
+	char tempString[13];
 	freeMessageMemory();  // Start by freeing previously allocated malloc pointers
+	Serial.print("Reading Files in: ");
+	Serial.println(root.name());
+	root.rewindDirectory();
 
-	File entry;
-	while ((entry = root.openNextFile()) != false) {
+	while (true) {
+		File entry = root.openNextFile();
+		if (!entry) {
+			Serial.println("No more files...");
+			break;
+		}
+		if (entry.isDirectory()) continue;
 		sprintf(tempString, "%s", entry.name());
+		if (!isFnMusic(tempString)) continue;
+
+		Serial.println(tempString);
 		numberElementsInArray++;
 		fileName[numberElementsInArray - 1] = (char *)malloc(13);
 		//checkMemory();
 		sprintf(fileName[numberElementsInArray - 1], "%s", tempString);
 	}
+}
+
+char * findNextFile(File root, const char * cmp) {
+	char * lowest;
+	char fn[13];
+	Serial.print("Reading Files in: ");
+	Serial.println(root.name());
+	root.rewindDirectory();
+
+	while (true) {
+		File entry = root.openNextFile();
+		if (!entry) {
+			Serial.println("No more files...");
+			break;
+		}
+		if (entry.isDirectory()) continue;
+		sprintf(fn, "%s", entry.name());
+		if (!isFnMusic(fn)) continue;
+
+		if (arrayLessThan(cmp, fn)) {
+			if (lowest[0] == '\0' || arrayLessThan(fn, lowest)) {
+				lowest = fn;
+			} 
+		}
+
+		Serial.println(lowest);
+
+	}
+
+	return lowest;
 }
 
 void printDirectory(File dir, int numTabs) {
@@ -179,7 +227,7 @@ void switchArray(byte value)
 //
 // Check 2 character arrays; return FALSE if #2 > 1; 
 // return TRUE if #2 > #1 for the switch. Return 1 = TRUE, 0 = FALSE
-byte arrayLessThan(char *ptr_1, char *ptr_2)
+byte arrayLessThan(const char *ptr_1, const char *ptr_2)
 {
 	char check1;
 	char check2;
@@ -268,3 +316,12 @@ void freeMessageMemory()
 // that array of pointers.
 // ---------------------------------------------------------------------------
 //
+
+void printArray()
+{
+	Serial.println("The array currently holds :");
+	for (int i = 0; i< numberElementsInArray; i++)
+	{
+		Serial.println(fileName[i]);
+	}
+}
