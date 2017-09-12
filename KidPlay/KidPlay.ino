@@ -27,16 +27,17 @@ uint8_t volume = 20;
 const uint8_t maxVol = 10;
 const uint8_t minVol = 40;
 
-int curTrack = 0;
-const char * curFolder = "/2";
+const char * curFolder = "2";
+char curFile[13];
+char nearest[13];
+char tmpFile[13];
 
-char * fileName[25];
-byte numberElementsInArray = 0;
+bool stopped = false;
 
 // the setup function runs once when you press reset or power the board
 void setup() {
 	Serial.begin(9600);
-	Serial.println("Initializing musicplayer... sine test");
+	Serial.println("Initializing musicplayer...");
 
 	if (!musicPlayer.begin()) { // initialise the music player
 		Serial.println(F("Couldn't find VS1053, do you have the right pins defined?"));
@@ -50,32 +51,31 @@ void setup() {
 
 	setVolume(EEPROM.read(adrVol));
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
-	
-	File curDir = SD.open(curFolder);
-	readFiles(curDir);
-	printArray();
-	sortFileArray();
-	printArray();
+
+	//printDirectory(SD.open(curFolder),0);
+	strcpy(curFile, "26-CIR~1.MP3");
 }
 
 // the loop function runs over and over again until power down or reset
 void loop() {
 	// play next track if nothing plays
-	if (!musicPlayer.playingMusic && curTrack < numberElementsInArray) {
-		playFile(curTrack);
-		curTrack++;
+
+	if (!musicPlayer.playingMusic && !stopped) {
+		//findNextFile();
+		findPrevFile();
+
+		//Serial.println(curFile);
+		//playFile(curFile);
 	}
 
-	delay(100);
+	delay(10);
 }
 
-void playFile(int num) {
-	if (num > numberElementsInArray) {
-		return;
-	}
+void playFile(const char * fn) {
+
 	char f[20];
 
-	sprintf(f, "%s/%s", curFolder, fileName[num]);
+	sprintf(f, "%s/%s", curFolder, fn);
 
 	musicPlayer.startPlayingFile(f);
 
@@ -105,12 +105,16 @@ void raiseVolume(uint8_t dif) {
 	setVolume(volume + dif);
 }
 
-void readFiles(File root) {
-	char tempString[13];
-	freeMessageMemory();  // Start by freeing previously allocated malloc pointers
-	Serial.print("Reading Files in: ");
-	Serial.println(root.name());
+void findNextFile() {
+	strcpy(nearest, "");
+	File root = SD.open(curFolder);
+
+	Serial.print("Finding File in '");
+	Serial.print(root.name());
+	Serial.print("' following: ");
+	Serial.println(curFile);
 	root.rewindDirectory();
+	bool set = false;
 
 	while (true) {
 		File entry = root.openNextFile();
@@ -118,24 +122,52 @@ void readFiles(File root) {
 			Serial.println("No more files...");
 			break;
 		}
-		if (entry.isDirectory()) continue;
-		sprintf(tempString, "%s", entry.name());
-		if (!isFnMusic(tempString)) continue;
+		if (entry.isDirectory()) {
+			Serial.println(" ... skipping Dir");
+			entry.close();
+			continue;
+		}
+		
+		strcpy(tmpFile, entry.name());
+		entry.close();
 
-		Serial.println(tempString);
-		numberElementsInArray++;
-		fileName[numberElementsInArray - 1] = (char *)malloc(13);
-		//checkMemory();
-		sprintf(fileName[numberElementsInArray - 1], "%s", tempString);
+		if (!isFnMusic(tmpFile)) {
+			Serial.print(" ... non music File: ");
+			Serial.println(tmpFile);
+			continue;
+		}
+
+		if (strcmp(tmpFile, curFile) <= 0) {
+			continue;
+		}
+
+		if (!set || strcmp(tmpFile, nearest) < 0) {
+			set = true;
+			strcpy(nearest, tmpFile);
+		}
 	}
+	if (!set) {
+		stopped = true;
+		Serial.println("No more Tracks... stopping");
+	}
+	else {
+		Serial.print("Next Track: ");
+		Serial.println(nearest);
+		strcpy(curFile, nearest);
+	}
+	root.close();
 }
 
-char * findNextFile(File root, const char * cmp) {
-	char * lowest;
-	char fn[13];
-	Serial.print("Reading Files in: ");
-	Serial.println(root.name());
+void findPrevFile() {
+	strcpy(nearest, "");
+	File root = SD.open(curFolder);
+
+	Serial.print("Finding File in '");
+	Serial.print(root.name());
+	Serial.print("' before: ");
+	Serial.println(curFile);
 	root.rewindDirectory();
+	bool set = false;
 
 	while (true) {
 		File entry = root.openNextFile();
@@ -143,21 +175,40 @@ char * findNextFile(File root, const char * cmp) {
 			Serial.println("No more files...");
 			break;
 		}
-		if (entry.isDirectory()) continue;
-		sprintf(fn, "%s", entry.name());
-		if (!isFnMusic(fn)) continue;
-
-		if (arrayLessThan(cmp, fn)) {
-			if (lowest[0] == '\0' || arrayLessThan(fn, lowest)) {
-				lowest = fn;
-			} 
+		if (entry.isDirectory()) {
+			Serial.println(" ... skipping Dir");
+			entry.close();
+			continue;
 		}
 
-		Serial.println(lowest);
+		strcpy(tmpFile, entry.name());
+		entry.close();
 
+		if (!isFnMusic(tmpFile)) {
+			Serial.print(" ... non music File: ");
+			Serial.println(tmpFile);
+			continue;
+		}
+
+		if (strcmp(tmpFile, curFile) >= 0) {
+			continue;
+		}
+
+		if (!set || strcmp(tmpFile, nearest) > 0) {
+			set = true;
+			strcpy(nearest, tmpFile);
+		}
 	}
-
-	return lowest;
+	if (!set) {
+		stopped = true;
+		Serial.println("No more Tracks... stopping");
+	}
+	else {
+		Serial.print("Next Track: ");
+		Serial.println(nearest);
+		strcpy(curFile, nearest);
+	}
+	root.close();
 }
 
 void printDirectory(File dir, int numTabs) {
@@ -186,13 +237,9 @@ void printDirectory(File dir, int numTabs) {
 
 bool isFnMusic(char* filename) {
 	int8_t len = strlen(filename);
+
 	bool result;
-	if (strstr(strlwr(filename + (len - 4)), ".mp3")
-		|| strstr(strlwr(filename + (len - 4)), ".aac")
-		|| strstr(strlwr(filename + (len - 4)), ".wma")
-		|| strstr(strlwr(filename + (len - 4)), ".wav")
-		|| strstr(strlwr(filename + (len - 4)), ".fla")
-		|| strstr(strlwr(filename + (len - 4)), ".mid")
+	if (strstr(filename + (len - 4), ".MP3")
 		// and anything else you want
 		) {
 		result = true;
@@ -201,127 +248,4 @@ bool isFnMusic(char* filename) {
 		result = false;
 	}
 	return result;
-}
-
-
-// -----------------------------------------------------------------------------------------------
-// switchArray - This function takes the element in the array that we are dealing with, and 
-// switches the pointers between this one and the previous one.
-// -----------------------------------------------------------------------------------------------
-void switchArray(byte value)
-{
-	// switch pointers i and i-1, using a temp pointer. 
-	char *tempPointer;
-
-	tempPointer = fileName[value - 1];
-	fileName[value - 1] = fileName[value];
-	fileName[value] = tempPointer;
-}
-
-
-// -------------------------------------------------------------------------
-// This is a real neat function. It decides whether the first string is "less than"
-// or "greater than" the previous string in the array. Input 2 pointers to chars;
-// if the function returns 1 then you should switch the pointers.
-// -------------------------------------------------------------------------
-//
-// Check 2 character arrays; return FALSE if #2 > 1; 
-// return TRUE if #2 > #1 for the switch. Return 1 = TRUE, 0 = FALSE
-byte arrayLessThan(const char *ptr_1, const char *ptr_2)
-{
-	char check1;
-	char check2;
-
-	int i = 0;
-	while (i < strlen(ptr_1))		// For each character in string 1, starting with the first:
-	{
-		check1 = (char)ptr_1[i];	// get the same char from string 1 and string 2
-
-									//Serial.print("Check 1 is "); Serial.print(check1);
-
-		if (strlen(ptr_2) < i)    // If string 2 is shorter, then switch them
-		{
-			return 1;
-		}
-		else
-		{
-			check2 = (char)ptr_2[i];
-			//   Serial.print("Check 2 is "); Serial.println(check2);
-
-			if (check2 > check1)
-			{
-				return 1;				// String 2 is greater; so switch them
-			}
-			if (check2 < check1)
-			{
-				return 0;				// String 2 is LESS; so DONT switch them
-			}
-			// OTHERWISE they're equal so far; check the next char !!
-			i++;
-		}
-	}
-
-	return 0;
-}
-
-// -----------------------------------------------------------------------
-// This is the guts of the sort function. It's also neat.
-// It compares the current element with each previous element, and switches
-// it to it's final place.
-// -----------------------------------------------------------------------
-void sortFileArray()
-{
-
-	int innerLoop;
-	int mainLoop;
-
-	for (mainLoop = 1; mainLoop < numberElementsInArray; mainLoop++)
-	{
-		innerLoop = mainLoop;
-		while (innerLoop >= 1)
-		{
-			if (arrayLessThan(fileName[innerLoop], fileName[innerLoop - 1]) == 1)
-			{
-				// Serial.print("Switching ");
-				// Serial.print(fileName[innerLoop]);
-				// Serial.print(" and ");
-				// Serial.println(fileName[innerLoop-1]);
-
-				switchArray(innerLoop);
-			}
-			innerLoop--;
-		}
-	}
-}
-
-// -----------------------------------------------------------------------
-// You remember we have to free the malloc's ? Well, it's a simple function.
-// The pointer points to nothing, and the memory that was used is 
-// -----------------------------------------------------------------------
-void freeMessageMemory()
-{
-	// If we have previous messages, then free the memory
-	for (byte i = 1; i <= numberElementsInArray; i++)
-	{
-		free(fileName[i - 1]);
-	}
-
-	numberElementsInArray = 0;
-
-}
-
-// ---------------------------------------------------------------------------
-// This is the part you care least about; how to populate the char array in the first place.
-// I have taken from this code from an MP3 project where I read the fies in a directory into
-// that array of pointers.
-// ---------------------------------------------------------------------------
-//
-
-void printArray()
-{
-	Serial.println("The array currently holds :");
-	for (int i = 0; i< numberElementsInArray; i++)
-	{
-		Serial.println(fileName[i]);
-	}
 }
