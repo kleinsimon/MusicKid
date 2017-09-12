@@ -3,38 +3,58 @@
  Created:	09.09.2017 22:19:30
  Author:	Simon
 */
-// include SPI, MP3 and SD libraries
 #include <EEPROM.h>
 #include <SPI.h>
 #include <Adafruit_VS1053.h>
 #include <SD.h>
+#include <Arduino.h>
+#include "EEPROMAnything.h"
 
 // These are the pins used for the music maker shield
 #define SHIELD_RESET  -1      // VS1053 reset pin (unused!)
 #define SHIELD_CS     7      // VS1053 chip select pin (output)
 #define SHIELD_DCS    6      // VS1053 Data/command select pin (output)
-
-// These are common pins between breakout and shield
 #define CARDCS 4     // Card chip select pin
-// DREQ should be an Int pin, see http://arduino.cc/en/Reference/attachInterrupt
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin
 
-// Eprom Adresses
-const int adrVol = 11;
+// Pins for Buttons
+#define btnPause 1
+#define btnVolUp 2
+#define btnVolDown 3
+#define btnNext 4
+#define btnPrev 5
+
+// Amount of DB for volume change
+#define volChange 5
+
+// Eeprom Adresses
+#define memAdrVol 11	//one byte, last volume
+#define memLastDir 12	//one byte, last Dir 
+#define memLastTrack 13	//13 bytes, last Track Name
+#define memLastPos 26	//8 bytes, last Position
 
 Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
 uint8_t volume = 20;
 const uint8_t maxVol = 10;
-const uint8_t minVol = 40;
+const uint8_t minVol = 60;
 
-const char * curFolder = "2";
+int curFolderNumber = 2;
+char * curFolder = "";
+
+//Stacks for File search
 char curFile[13];
 char nearest[13];
 char tmpFile[13];
 
-bool stopped = false;
+//Stacks for Button state and Event state
+bool btnState[8];
+bool btnTemp[8];
+bool btnConsumed[8];
 
-// the setup function runs once when you press reset or power the board
+// State of the player
+bool stopped = false;
+bool paused = false;
+
 void setup() {
 	Serial.begin(9600);
 	Serial.println("Initializing musicplayer...");
@@ -49,43 +69,106 @@ void setup() {
 		while (1);  // don't do anything more
 	}
 
-	setVolume(EEPROM.read(adrVol));
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
 
+	
+	const uint8_t lastFolderNumber = EEPROM.read(memLastDir);
+	char lastTrackName[13];
+	EEPROM_readAnything(memLastTrack, lastTrackName);
+
+	Serial.print("Last Folder Number: ");
+	Serial.println(lastFolderNumber);
+
+	initButtons();
 	//printDirectory(SD.open(curFolder),0);
-	strcpy(curFile, "26-CIR~1.MP3");
+
+	sprintf(curFolder, "%d", curFolderNumber);
+
+	Serial.print("Current Folder Number: ");
+	Serial.println(curFolderNumber);
+	Serial.print("Current Folder: ");
+	Serial.println(curFolder);
+	EEPROM.write(memLastDir, curFolderNumber);
+
+	setVolume(EEPROM.read(memAdrVol));
+
+	if (lastFolderNumber == curFolderNumber) {
+		Serial.print("Last played: ");
+		Serial.println(lastTrackName);
+		strcpy(curFile, lastTrackName);
+		playFile();
+		long lastPos = 0;
+		EEPROM_readAnything(memLastPos, lastPos);
+		Serial.print("Resuming at : ");
+		Serial.println(lastPos);
+		musicPlayer.currentTrack.seek(lastPos);
+	}
 }
 
 // the loop function runs over and over again until power down or reset
 void loop() {
-	// play next track if nothing plays
+	readButtons();
 
-	if (!musicPlayer.playingMusic && !stopped) {
-		//findNextFile();
+	if (checkEvent(btnPause)) {
+		Serial.println("Pause");
+		togglePause();
+	}
+	else if (checkEvent(btnNext)) {
+		musicPlayer.stopPlaying();
+	}
+	else if (checkEvent(btnPrev)) {
+		musicPlayer.stopPlaying();
 		findPrevFile();
+		playFile();
+	}
+	else if (checkEvent(btnVolUp)) {
+		raiseVolume(-volChange);
+	}
+	else if (checkEvent(btnVolDown)) {
+		raiseVolume(volChange);
+	}
 
-		//Serial.println(curFile);
-		//playFile(curFile);
+	// play next track if nothing plays
+	if (!musicPlayer.playingMusic && !stopped && !paused) {
+		findNextFile();
+		playFile();
+	}
+	else {
+		EEPROM_writeAnything(memLastPos, musicPlayer.currentTrack.position());
 	}
 
 	delay(10);
 }
 
-void playFile(const char * fn) {
+bool checkEvent(uint8_t pin) {
+	bool r = btnState[pin] && !btnConsumed[pin];
+	if (r)	btnConsumed[pin] = true;
+	return r;
+}
+
+void playFile() {
 
 	char f[20];
 
-	sprintf(f, "%s/%s", curFolder, fn);
+	sprintf(f, "%s/%s", curFolder, curFile);
 
 	musicPlayer.startPlayingFile(f);
 
 	Serial.print("Playing '");
 	Serial.print(f);
 	Serial.println("'");
+
+	safePlayingFile();
+}
+
+void safePlayingFile() {
+	//writeCharEeprom(curFile, memLastTrack);
+	EEPROM_writeAnything(memLastTrack, curFile);
 }
 
 void togglePause() {
-	musicPlayer.pausePlaying(!musicPlayer.paused());
+	paused = !paused;
+	musicPlayer.pausePlaying(paused);
 }
 
 void setVolume(uint8_t v) {
@@ -96,13 +179,33 @@ void setVolume(uint8_t v) {
 
 	Serial.print("Set Volume to ");
 	Serial.println(v);
-	musicPlayer.setVolume(volume, volume);
+	musicPlayer.setVolume(v, v);
 	volume = v;
-	EEPROM.write(adrVol, volume);
+	EEPROM.write(memAdrVol, volume);
 }
 
 void raiseVolume(uint8_t dif) {
 	setVolume(volume + dif);
+}
+
+void initButtons() {
+	for (uint8_t i = 0; i < 8; i++)
+		musicPlayer.GPIO_pinMode(i, INPUT);
+}
+
+void readButtons() {
+	for (uint8_t i = 0; i < 8; i++) {
+		btnTemp[i] = btnState[i];
+		btnState[i] = musicPlayer.GPIO_digitalRead(i);
+		if (btnTemp[i] && !btnState[i] && btnConsumed[i]) btnConsumed[i] = false; //Reset if now not pressed
+	}
+}
+
+void plotBtnState() {
+	Serial.print("Buttons: [");
+	for (uint8_t i = 0; i < 8; i++)
+		Serial.print(btnState[i]);
+	Serial.println("]");
 }
 
 void findNextFile() {
@@ -127,7 +230,7 @@ void findNextFile() {
 			entry.close();
 			continue;
 		}
-		
+
 		strcpy(tmpFile, entry.name());
 		entry.close();
 

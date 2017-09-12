@@ -21,5 +21,8 @@
     <ClInclude Include="__vm\.KidPlay.vsarduino.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="EEPROMAnything.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
