@@ -1,7 +1,7 @@
 /*
  Name:		KidPlay.ino
  Created:	09.09.2017 22:19:30
- Author:	Simon
+ Author:	Simon Klein (simon.klein@outlook.com)
 */
 #include <EEPROM.h>
 #include <SPI.h>
@@ -17,6 +17,9 @@
 #define CARDCS 4     // Card chip select pin
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin
 
+// Pins for the Folder ID Switches. Order is lowest bit to highest bit. The more pins, the more folders can be addressed.
+const uint8_t fidBtnPins[6] = {8,9,10,11,12,13};
+
 // Pins for Buttons
 #define btnPause 1
 #define btnVolUp 2
@@ -24,29 +27,25 @@
 #define btnNext 4
 #define btnPrev 5
 
-// Amount of DB for volume change
-#define volChange 5
-
 // Eeprom Adresses
 #define memAdrVol 11	//one byte, last volume
 #define memLastDir 12	//one byte, last Dir 
 #define memLastTrack 13	//13 bytes, last Track Name
 #define memLastPos 26	//8 bytes, last Position
 
+// Amount of DB for volume change
+#define volChange 5
+#define maxVol 10
+#define minVol 60
+
 Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
-uint8_t volume = 20;
-const uint8_t maxVol = 10;
-const uint8_t minVol = 60;
 
-int curFolderNumber = 2;
-char * curFolder = "";
-
-//Stacks for File search
+// Stacks for File search
 char curFile[13];
 char nearest[13];
 char tmpFile[13];
 
-//Stacks for Button state and Event state
+// Stacks for Button state and Event state
 bool btnState[8];
 bool btnTemp[8];
 bool btnConsumed[8];
@@ -55,23 +54,29 @@ bool btnConsumed[8];
 bool stopped = false;
 bool paused = false;
 
+uint8_t volume = 40;
+int curFolderNumber = 0;
+char curFolder[3];
+
 void setup() {
 	Serial.begin(9600);
 	Serial.println("Initializing musicplayer...");
 
 	if (!musicPlayer.begin()) { // initialise the music player
 		Serial.println(F("Couldn't find VS1053, do you have the right pins defined?"));
-		while (1);
+		while (1); // don't do anything more
 	}
 
 	if (!SD.begin(CARDCS)) {
 		Serial.println(F("SD failed, or not present"));
-		while (1);  // don't do anything more
+		while (1); // don't do anything more
 	}
 
+	// Initialization
+	initButtons();
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
-
 	
+	// Read last state from eeprom
 	const uint8_t lastFolderNumber = EEPROM.read(memLastDir);
 	char lastTrackName[13];
 	EEPROM_readAnything(memLastTrack, lastTrackName);
@@ -79,19 +84,22 @@ void setup() {
 	Serial.print("Last Folder Number: ");
 	Serial.println(lastFolderNumber);
 
-	initButtons();
-	//printDirectory(SD.open(curFolder),0);
-
+	// Read Folder ID from GPIOs
+	curFolderNumber = readFidState();
 	sprintf(curFolder, "%d", curFolderNumber);
 
 	Serial.print("Current Folder Number: ");
 	Serial.println(curFolderNumber);
 	Serial.print("Current Folder: ");
 	Serial.println(curFolder);
+
+	// Store current folder number in eeprom
 	EEPROM.write(memLastDir, curFolderNumber);
 
+	// Restore volume
 	setVolume(EEPROM.read(memAdrVol));
 
+	// If same folder as last time, restore track and position
 	if (lastFolderNumber == curFolderNumber) {
 		Serial.print("Last played: ");
 		Serial.println(lastTrackName);
@@ -105,7 +113,7 @@ void setup() {
 	}
 }
 
-// the loop function runs over and over again until power down or reset
+// Main loop
 void loop() {
 	readButtons();
 
@@ -140,14 +148,15 @@ void loop() {
 	delay(10);
 }
 
+//Check for an event and consume it
 bool checkEvent(uint8_t pin) {
 	bool r = btnState[pin] && !btnConsumed[pin];
 	if (r)	btnConsumed[pin] = true;
 	return r;
 }
 
+//Play the current file in the current folder. Store filename in eeprom
 void playFile() {
-
 	char f[20];
 
 	sprintf(f, "%s/%s", curFolder, curFile);
@@ -158,19 +167,16 @@ void playFile() {
 	Serial.print(f);
 	Serial.println("'");
 
-	safePlayingFile();
-}
-
-void safePlayingFile() {
-	//writeCharEeprom(curFile, memLastTrack);
 	EEPROM_writeAnything(memLastTrack, curFile);
 }
 
+// Pause / unpause music
 void togglePause() {
 	paused = !paused;
 	musicPlayer.pausePlaying(paused);
 }
 
+// Sets volume to the given value but keeps the limits given by maxVol and minVol (lower is louder)
 void setVolume(uint8_t v) {
 	if (v < maxVol)
 		v = maxVol;
@@ -184,15 +190,20 @@ void setVolume(uint8_t v) {
 	EEPROM.write(memAdrVol, volume);
 }
 
+// Raise the volume by dif (negative for louder)
 void raiseVolume(uint8_t dif) {
 	setVolume(volume + dif);
 }
 
+// Initialize all Buttons on the shield and the FID-Buttons on arduino
 void initButtons() {
 	for (uint8_t i = 0; i < 8; i++)
 		musicPlayer.GPIO_pinMode(i, INPUT);
+	for (uint8_t i = 0; i < sizeof(fidBtnPins); i++)
+		pinMode(fidBtnPins[i], INPUT_PULLUP);
 }
 
+// Read the shield buttons state and reset event state
 void readButtons() {
 	for (uint8_t i = 0; i < 8; i++) {
 		btnTemp[i] = btnState[i];
@@ -201,6 +212,21 @@ void readButtons() {
 	}
 }
 
+// Read the fid state to a number. Low means pressed (internal pullup)
+int readFidState() {
+	bool fidTmp[6];
+	int res = 0;
+	Serial.print("FID State: ");
+	for (uint8_t i = 0; i < sizeof(fidBtnPins); i++) {
+		bitWrite(res, i, !digitalRead(fidBtnPins[i]));
+		Serial.print(!digitalRead(fidBtnPins[i]));
+
+	}
+	Serial.println(" ");
+	return res;
+}
+
+// Print the FID-State to Serial
 void plotBtnState() {
 	Serial.print("Buttons: [");
 	for (uint8_t i = 0; i < 8; i++)
@@ -208,6 +234,7 @@ void plotBtnState() {
 	Serial.println("]");
 }
 
+// Find the alphabetically next file after the current one
 void findNextFile() {
 	strcpy(nearest, "");
 	File root = SD.open(curFolder);
@@ -234,7 +261,7 @@ void findNextFile() {
 		strcpy(tmpFile, entry.name());
 		entry.close();
 
-		if (!isFnMusic(tmpFile)) {
+		if (!isValidExt(tmpFile)) {
 			Serial.print(" ... non music File: ");
 			Serial.println(tmpFile);
 			continue;
@@ -261,6 +288,7 @@ void findNextFile() {
 	root.close();
 }
 
+// Find the alphabetically previous file before the current one
 void findPrevFile() {
 	strcpy(nearest, "");
 	File root = SD.open(curFolder);
@@ -287,7 +315,7 @@ void findPrevFile() {
 		strcpy(tmpFile, entry.name());
 		entry.close();
 
-		if (!isFnMusic(tmpFile)) {
+		if (!isValidExt(tmpFile)) {
 			Serial.print(" ... non music File: ");
 			Serial.println(tmpFile);
 			continue;
@@ -314,41 +342,14 @@ void findPrevFile() {
 	root.close();
 }
 
-void printDirectory(File dir, int numTabs) {
-	while (true) {
-		File entry = dir.openNextFile();
-		if (!entry) {
-			// no more files
-			break;
-		}
-		for (uint8_t i = 0; i < numTabs; i++) {
-			Serial.print('\t');
-		}
-		Serial.print(entry.name());
-		if (entry.isDirectory()) {
-			Serial.println("/");
-			printDirectory(entry, numTabs + 1);
-		}
-		else {
-			// files have sizes, directories do not
-			Serial.print("\t\t");
-			Serial.println(entry.size(), DEC);
-		}
-		entry.close();
-	}
-}
-
-bool isFnMusic(char* filename) {
+// Check if the file is a valid music file
+bool isValidExt(char* filename) {
 	int8_t len = strlen(filename);
 
-	bool result;
-	if (strstr(filename + (len - 4), ".MP3")
-		// and anything else you want
-		) {
-		result = true;
-	}
-	else {
-		result = false;
-	}
-	return result;
+	return strstr(filename + (len - 4), ".MP3")
+		|| strstr(filename + (len - 4), ".AAC")
+		|| strstr(filename + (len - 4), ".WMA")
+		|| strstr(filename + (len - 4), ".WAV")
+		|| strstr(filename + (len - 4), ".FLA")
+		|| strstr(filename + (len - 4), ".MID");
 }
