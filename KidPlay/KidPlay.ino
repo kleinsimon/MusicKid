@@ -55,7 +55,9 @@ bool stopped = false;
 bool paused = false;
 
 uint8_t volume = 40;
-int curFolderNumber = 0;
+uint8_t curFolderNumber = 0;
+uint8_t lastFolderNumber = 0;
+char lastTrackName[13];
 char curFolder[3];
 
 void setup() {
@@ -77,39 +79,31 @@ void setup() {
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
 	
 	// Read last state from eeprom
-	const uint8_t lastFolderNumber = EEPROM.read(memLastDir);
-	char lastTrackName[13];
+	lastFolderNumber = EEPROM.read(memLastDir);
+
 	EEPROM_readAnything(memLastTrack, lastTrackName);
 
 	Serial.print("Last Folder Number: ");
 	Serial.println(lastFolderNumber);
 
-	// Read Folder ID from GPIOs
-	curFolderNumber = readFidState();
-	sprintf(curFolder, "%d", curFolderNumber);
-
-	Serial.print("Current Folder Number: ");
-	Serial.println(curFolderNumber);
-	Serial.print("Current Folder: ");
-	Serial.println(curFolder);
-
-	// Store current folder number in eeprom
-	EEPROM.write(memLastDir, curFolderNumber);
-
 	// Restore volume
 	setVolume(EEPROM.read(memAdrVol));
+
+	initDir();
 
 	// If same folder as last time, restore track and position
 	if (lastFolderNumber == curFolderNumber) {
 		Serial.print("Last played: ");
 		Serial.println(lastTrackName);
 		strcpy(curFile, lastTrackName);
-		playFile();
 		long lastPos = 0;
 		EEPROM_readAnything(memLastPos, lastPos);
 		Serial.print("Resuming at : ");
 		Serial.println(lastPos);
+		playFile();
+		musicPlayer.pausePlaying(true);
 		musicPlayer.currentTrack.seek(lastPos);
+		musicPlayer.pausePlaying(false);
 	}
 }
 
@@ -136,6 +130,14 @@ void loop() {
 		raiseVolume(volChange);
 	}
 
+	int fidState = readFidState();
+	if (fidState != curFolderNumber) {
+		musicPlayer.stopPlaying();
+		curFolderNumber = fidState;
+		initDir();
+		stopped = false;
+	}
+
 	// play next track if nothing plays
 	if (!musicPlayer.playingMusic && !stopped && !paused) {
 		findNextFile();
@@ -146,6 +148,25 @@ void loop() {
 	}
 
 	delay(10);
+}
+
+void initDir() {
+
+	strcpy(curFile, "");
+
+	// Read Folder ID from GPIOs
+	curFolderNumber = readFidState();
+	sprintf(curFolder, "%d", curFolderNumber);
+
+	printDirectory(SD.open(curFolder),0);
+
+	Serial.print("Current Folder Number: ");
+	Serial.println(curFolderNumber);
+	Serial.print("Current Folder: ");
+	Serial.println(curFolder);
+
+	// Store current folder number in eeprom
+	EEPROM.write(memLastDir, curFolderNumber);
 }
 
 //Check for an event and consume it
@@ -216,13 +237,13 @@ void readButtons() {
 int readFidState() {
 	bool fidTmp[6];
 	int res = 0;
-	Serial.print("FID State: ");
+	//Serial.print("FID State: ");
 	for (uint8_t i = 0; i < sizeof(fidBtnPins); i++) {
 		bitWrite(res, i, !digitalRead(fidBtnPins[i]));
-		Serial.print(!digitalRead(fidBtnPins[i]));
+		//Serial.print(!digitalRead(fidBtnPins[i]));
 
 	}
-	Serial.println(" ");
+	//Serial.println(" ");
 	return res;
 }
 
@@ -352,4 +373,31 @@ bool isValidExt(char* filename) {
 		|| strstr(filename + (len - 4), ".WAV")
 		|| strstr(filename + (len - 4), ".FLA")
 		|| strstr(filename + (len - 4), ".MID");
+}
+
+/// File listing helper
+void printDirectory(File dir, int numTabs) {
+	while (true) {
+
+		File entry = dir.openNextFile();
+		if (!entry) {
+			// no more files
+			//Serial.println("**nomorefiles**");
+			break;
+		}
+		for (uint8_t i = 0; i<numTabs; i++) {
+			Serial.print('\t');
+		}
+		Serial.print(entry.name());
+		if (entry.isDirectory()) {
+			Serial.println("/");
+			printDirectory(entry, numTabs + 1);
+		}
+		else {
+			// files have sizes, directories do not
+			Serial.print("\t\t");
+			Serial.println(entry.size(), DEC);
+		}
+		entry.close();
+	}
 }
