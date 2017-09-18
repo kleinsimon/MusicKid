@@ -21,11 +21,11 @@
 const uint8_t fidBtnPins[6] = {8,9,10,11,12,13};
 
 // Pins for Buttons
-#define btnPause 1
-#define btnVolUp 2
-#define btnVolDown 3
-#define btnNext 4
-#define btnPrev 5
+#define btnPause 3
+#define btnVolUp 1
+#define btnVolDown 2
+#define btnNext 5
+#define btnPrev 4
 
 // Eeprom Adresses
 #define memAdrVol 11	//one byte, last volume
@@ -37,6 +37,12 @@ const uint8_t fidBtnPins[6] = {8,9,10,11,12,13};
 #define volChange 5
 #define maxVol 10
 #define minVol 60
+
+// cycle sleep
+#define loopSleep 10
+
+// Delay before switching to new folder in ms
+#define switchDelay 100
 
 Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
 
@@ -53,6 +59,8 @@ bool btnConsumed[8];
 // State of the player
 bool stopped = false;
 bool paused = false;
+
+int delayTimer = 0;
 
 uint8_t volume = 40;
 uint8_t curFolderNumber = 0;
@@ -112,7 +120,6 @@ void loop() {
 	readButtons();
 
 	if (checkEvent(btnPause)) {
-		Serial.println("Pause");
 		togglePause();
 	}
 	else if (checkEvent(btnNext)) {
@@ -132,10 +139,19 @@ void loop() {
 
 	int fidState = readFidState();
 	if (fidState != curFolderNumber) {
-		musicPlayer.stopPlaying();
-		curFolderNumber = fidState;
-		initDir();
-		stopped = false;
+		if (delayTimer > switchDelay) {
+			musicPlayer.stopPlaying();
+			curFolderNumber = fidState;
+			initDir();
+			stopped = false;
+			delayTimer = 0;
+		} 
+		else {
+			delayTimer++;
+		}
+	}
+	else {
+		delayTimer = 0;
 	}
 
 	// play next track if nothing plays
@@ -147,7 +163,7 @@ void loop() {
 		EEPROM_writeAnything(memLastPos, musicPlayer.currentTrack.position());
 	}
 
-	delay(10);
+	delay(loopSleep);
 }
 
 void initDir() {
@@ -194,6 +210,8 @@ void playFile() {
 // Pause / unpause music
 void togglePause() {
 	paused = !paused;
+	Serial.print("Paused: ");
+	Serial.println(paused);
 	musicPlayer.pausePlaying(paused);
 }
 
@@ -239,7 +257,7 @@ int readFidState() {
 	int res = 0;
 	//Serial.print("FID State: ");
 	for (uint8_t i = 0; i < sizeof(fidBtnPins); i++) {
-		bitWrite(res, i, !digitalRead(fidBtnPins[i]));
+		bitWrite(res, i, digitalRead(fidBtnPins[i]));
 		//Serial.print(!digitalRead(fidBtnPins[i]));
 
 	}
