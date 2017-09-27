@@ -42,6 +42,7 @@ uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 #define memLastDir 12	//one byte, last Dir 
 #define memLastTrack 13	//13 bytes, last Track Name
 #define memLastPos 26	//8 bytes, last Position
+#define memLastID 34 //10 bytes, rfid card ID
 
 // Amount of DB for volume change
 #define volChange 5
@@ -56,10 +57,7 @@ uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 
 Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
 MFRC522 rfid(RFIS_SS_PIN, RFIS_RST_PIN);
-MFRC522::MIFARE_Key key;
-
-byte nuidPICC[4];
-
+//MFRC522::MIFARE_Key key;
 
 // Stacks for File search
 char curFile[13];
@@ -78,10 +76,11 @@ bool paused = false;
 int delayTimer = 0;
 
 uint8_t volume = 40;
-uint8_t curFolderNumber = 0;
-uint8_t lastFolderNumber = 0;
+
 char lastTrackName[13];
-char curFolder[3];
+char curFolder[20];
+byte curCardID[10] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+int curCardIDlen = 0;
 
 void setup() {
 	Serial.begin(9600);
@@ -100,17 +99,24 @@ void setup() {
 		while (1); // don't do anything more
 	}
 
+	if (!rfid.PCD_PerformSelfTest()) {
+		Serial.println(F("RFID failed, or not present"));
+		while (1); // don't do anything more
+	}
+
+
 	// Initialization
 	initButtons();
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
 
-	for (byte i = 0; i < 6; i++) {
-		key.keyByte[i] = 0xFF;
-	}
+	//for (byte i = 0; i < 6; i++) {
+	//	key.keyByte[i] = 0xFF;
+	//}
 	
 	// Read last state from eeprom
-	lastFolderNumber = EEPROM.read(memLastDir);
-
+	//lastFolderNumber = EEPROM.read(memLastDir);
+	byte lastCardID[10];
+	EEPROM_readAnything(memLastID, lastCardID);
 	EEPROM_readAnything(memLastTrack, lastTrackName);
 
 	Serial.print("Last Folder Number: ");
@@ -208,12 +214,7 @@ void readRfid() {
 		return;
 	}
 
-	if (rfid.uid.uidByte[0] == nuidPICC[0] ||
-		rfid.uid.uidByte[1] == nuidPICC[1] ||
-		rfid.uid.uidByte[2] == nuidPICC[2] ||
-		rfid.uid.uidByte[3] == nuidPICC[3]) {
-		return;
-	}
+	if (byteCmp(curCardID, rfid.uid.uidByte, rfid.uid.size)) return;
 
 	Serial.print(F("PICC type: "));
 	Serial.println(rfid.PICC_GetTypeName(piccType));
@@ -221,9 +222,7 @@ void readRfid() {
 	Serial.println(F("A new card has been detected."));
 
 	// Store NUID into nuidPICC array
-	for (byte i = 0; i < 4; i++) {
-		nuidPICC[i] = rfid.uid.uidByte[i];
-	}
+	byteCopy(rfid.uid.uidByte, curCardID, rfid.uid.size);
 
 	Serial.println(F("The NUID tag is:"));
 	Serial.print(F("In hex: "));
@@ -235,26 +234,59 @@ void readRfid() {
 
 	rfid.PICC_HaltA();
 	rfid.PCD_StopCrypto1();
+
+	curCardIDlen = rfid.uid.size;
+}
+
+// Compare first n bytes of arrays b1 and b2
+bool byteCmp(byte b1[], byte b2[], int n=0) {
+	bool r = true;
+	if (n == 0) n = sizeof(b1);
+
+	for (int i = 0; i < n; i++)
+		r &= b1[i] == b2[i];
+	
+	return r;
+}
+
+// Copy n bytes of array b1 to b2
+void byteCopy(byte b1[], byte *b2, int n = 0) {
+	for (int i = 0; i < n; i++)
+		b2[i] = b1[i];
 }
 
 void initDir() {
 
 	strcpy(curFile, "");
 
-	// Read Folder ID from GPIOs
-	curFolderNumber = 0;
-	sprintf(curFolder, "%d", curFolderNumber);
+	// Read Folder ID 
+	cardIdtoHex();
 
 	//printDirectory(SD.open(curFolder),0);
 
-	Serial.print("Current Folder Number: ");
-	Serial.println(curFolderNumber);
 	Serial.print("Current Folder: ");
 	Serial.println(curFolder);
-
+	
 	// Store current folder number in eeprom
-	EEPROM.write(memLastDir, curFolderNumber);
+	//EEPROM.write(memLastDir, curFolderNumber);
+	EEPROM_writeAnything(memLastID, curCardID);
 }
+
+// write current card ID to curFolder
+static void cardIdtoHex()
+{
+	size_t i = 0;
+	char *tmp = new char[2];
+	for (i = 0; i < 10; ++i) {
+		if (i < curCardIDlen)
+			sprintf(tmp, "%02X", curCardID[i]);
+		else
+			tmp = "  ";
+		curFolder[i * 2] = tmp[1];
+		curFolder[i * 2 + 1] = tmp[2];
+	}
+}
+
 
 //Check for an event and consume it
 bool checkEvent(uint8_t pin) {
