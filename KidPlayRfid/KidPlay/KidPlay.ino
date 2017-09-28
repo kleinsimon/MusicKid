@@ -4,9 +4,9 @@
  Author:	Simon Klein (simon.klein@outlook.com)
 */
 #include <require_cpp11.h>
-#include <MFRC522Hack.h>
+//#include <MFRC522Hack.h>
 #include <MFRC522Extended.h>
-#include <MFRC522Debug.h>
+//#include <MFRC522Debug.h>
 #include <MFRC522.h>
 #include <deprecated.h>
 #include <EEPROM.h>
@@ -24,13 +24,14 @@
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin
 
 // RFID 522 Pins:
-#define RFIS_RST_PIN -1
-#define RFIS_SS_PIN 10
+#define RFID_RST_PIN -1
+#define RFID_SS_PIN 10
 
 // Pins for Buttons: VolUp, VolDown, Pause, Prev, Next
 #define nBtnPins 5
 uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 
+// assignment of buttons in array
 #define btnVolUp 0
 #define btnVolDown 1
 #define btnPause 2
@@ -38,28 +39,23 @@ uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 #define btnNext 4
 
 // Eeprom Adresses
+#define memVolLocked 10	//one byte, Volume locked
 #define memAdrVol 11	//one byte, last volume
 #define memLastDir 12	//one byte, last Dir 
 #define memLastTrack 13	//13 bytes, last Track Name
 #define memLastPos 26	//8 bytes, last Position
 #define memLastID 34 //10 bytes, rfid card ID
+#define memLastIDLen 45 //10 bytes, rfid card ID
 
-// Amount of DB for volume change
+// Amount of DB for volume change, max and min volume (lower value is higher volume)
 #define volChange 5
-#define maxVol 10
+#define maxVol 20
 #define minVol 60
 
 // cycle sleep
 #define loopSleep 10
 
-// Delay before switching to new folder in loops
-#define switchDelay 100
-
-Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
-MFRC522 rfid(RFIS_SS_PIN, RFIS_RST_PIN);
-//MFRC522::MIFARE_Key key;
-
-// Stacks for File search
+// Buffers for File search
 char curFile[13];
 char nearest[13];
 char tmpFile[13];
@@ -73,14 +69,16 @@ bool btnConsumed[nBtnPins];
 bool stopped = false;
 bool paused = false;
 
-int delayTimer = 0;
-
+// Runtime vars
 uint8_t volume = 40;
-
 char lastTrackName[13];
 char curFolder[20];
 byte curCardID[10] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 int curCardIDlen = 0;
+
+// Interface objects for shields
+Adafruit_VS1053_FilePlayer musicPlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
+MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);
 
 void setup() {
 	Serial.begin(9600);
@@ -115,28 +113,28 @@ void setup() {
 	
 	// Read last state from eeprom
 	//lastFolderNumber = EEPROM.read(memLastDir);
-	byte lastCardID[10];
-	EEPROM_readAnything(memLastID, lastCardID);
+	//byte lastCardID[10];
+	//size_t lastCardIDlen = 0;
+	EEPROM_readAnything(memLastID, curCardID);
+	EEPROM_readAnything(memLastIDLen, curCardIDlen);
 	EEPROM_readAnything(memLastTrack, lastTrackName);
 
-	Serial.print("Last Folder Number: ");
-	Serial.println(lastFolderNumber);
+	Serial.print("Last Card ID: ");
+	printHex(curCardID, curCardIDlen);
+	initDir();
 
 	// Restore volume
 	setVolume(EEPROM.read(memAdrVol));
 
-	initDir();
-
 	// If same folder as last time, restore track and position
-	if (lastFolderNumber == curFolderNumber) {
-		Serial.print("Last played: ");
-		Serial.println(lastTrackName);
-		strcpy(curFile, lastTrackName);
+	Serial.print("Last played: ");
+	Serial.println(lastTrackName);
+	strcpy(curFile, lastTrackName);
+	if (playFile()) {
 		long lastPos = 0;
 		EEPROM_readAnything(memLastPos, lastPos);
 		Serial.print("Resuming at : ");
 		Serial.println(lastPos);
-		playFile();
 		musicPlayer.pausePlaying(true);
 		musicPlayer.currentTrack.seek(lastPos);
 		musicPlayer.pausePlaying(false);
@@ -145,8 +143,9 @@ void setup() {
 
 // Main loop
 void loop() {
+	
+	// Check action buttons
 	readButtons();
-
 	if (checkEvent(btnPause)) {
 		togglePause();
 	}
@@ -167,25 +166,13 @@ void loop() {
 		raiseVolume(volChange);
 	}
 
+	// Check for new ID card
 	if (rfid.PICC_IsNewCardPresent()) {
-		readRfid();
-	}
-
-	int fidState = 0;
-	if (fidState != curFolderNumber) {
-		if (delayTimer > switchDelay) {
+		if (readRfid()) {
 			musicPlayer.stopPlaying();
-			curFolderNumber = fidState;
 			initDir();
 			stopped = false;
-			delayTimer = 0;
-		} 
-		else {
-			delayTimer++;
 		}
-	}
-	else {
-		delayTimer = 0;
 	}
 
 	// play next track if nothing plays
@@ -200,7 +187,8 @@ void loop() {
 	delay(loopSleep);
 }
 
-void readRfid() {
+// Read the rfid card id and store in curCardID. if new ID, return true
+bool readRfid() {
 	if (!rfid.PICC_ReadCardSerial())
 		return;
 
@@ -211,10 +199,10 @@ void readRfid() {
 		piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
 		piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
 		Serial.println(F("Your tag is not of type MIFARE Classic."));
-		return;
+		return false;
 	}
 
-	if (byteCmp(curCardID, rfid.uid.uidByte, rfid.uid.size)) return;
+	if (byteCmp(curCardID, rfid.uid.uidByte, rfid.uid.size)) return false;
 
 	Serial.print(F("PICC type: "));
 	Serial.println(rfid.PICC_GetTypeName(piccType));
@@ -236,27 +224,26 @@ void readRfid() {
 	rfid.PCD_StopCrypto1();
 
 	curCardIDlen = rfid.uid.size;
+	return true;
 }
 
 // Compare first n bytes of arrays b1 and b2
-bool byteCmp(byte b1[], byte b2[], int n=0) {
+bool byteCmp(byte b1[], byte b2[], int n) {
 	bool r = true;
-	if (n == 0) n = sizeof(b1);
 
 	for (int i = 0; i < n; i++)
 		r &= b1[i] == b2[i];
-	
+
 	return r;
 }
 
 // Copy n bytes of array b1 to b2
-void byteCopy(byte b1[], byte *b2, int n = 0) {
+void byteCopy(byte b1[], byte *b2, int n) {
 	for (int i = 0; i < n; i++)
 		b2[i] = b1[i];
 }
 
 void initDir() {
-
 	strcpy(curFile, "");
 
 	// Read Folder ID 
@@ -278,15 +265,17 @@ static void cardIdtoHex()
 	size_t i = 0;
 	char *tmp = new char[2];
 	for (i = 0; i < 10; ++i) {
-		if (i < curCardIDlen)
+		if (i < curCardIDlen) {
 			sprintf(tmp, "%02X", curCardID[i]);
-		else
-			tmp = "  ";
-		curFolder[i * 2] = tmp[1];
-		curFolder[i * 2 + 1] = tmp[2];
+			curFolder[i * 2] = tmp[1];
+			curFolder[i * 2 + 1] = tmp[2];
+		}
+		else {
+			curFolder[i * 2] = '\0';
+			break;
+		}
 	}
 }
-
 
 //Check for an event and consume it
 bool checkEvent(uint8_t pin) {
@@ -296,18 +285,24 @@ bool checkEvent(uint8_t pin) {
 }
 
 //Play the current file in the current folder. Store filename in eeprom
-void playFile() {
-	char f[20];
+bool playFile() {
+	char f[35];
 
 	sprintf(f, "%s/%s", curFolder, curFile);
 
-	musicPlayer.startPlayingFile(f);
+	if (SD.exists(f)) {
+		musicPlayer.startPlayingFile(f);
 
-	Serial.print("Playing '");
-	Serial.print(f);
-	Serial.println("'");
+		Serial.print("Playing '");
+		Serial.print(f);
+		Serial.println("'");
 
-	EEPROM_writeAnything(memLastTrack, curFile);
+		EEPROM_writeAnything(memLastTrack, curFile);
+		return true;
+	}
+	else {
+		return false;
+	}
 }
 
 // Pause / unpause music
