@@ -5,7 +5,7 @@
 */
 #include <require_cpp11.h>
 //#include <MFRC522Hack.h>
-#include <MFRC522Extended.h>
+//#include <MFRC522Extended.h>
 //#include <MFRC522Debug.h>
 #include <MFRC522.h>
 #include <deprecated.h>
@@ -74,11 +74,11 @@ uint8_t volume = 40;
 char lastTrackName[13];
 char curFolder[20];
 byte curCardID[10] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-int curCardIDlen = 0;
+int curCardIDlen = 4;
 
 // Interface objects for shields
-Adafruit_VS1053_FilePlayer musicPlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
-MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);
+Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
+MFRC522 rfid = MFRC522(RFID_SS_PIN, RFID_RST_PIN);
 
 void setup() {
 	Serial.begin(9600);
@@ -97,30 +97,20 @@ void setup() {
 		while (1); // don't do anything more
 	}
 
-	if (!rfid.PCD_PerformSelfTest()) {
-		Serial.println(F("RFID failed, or not present"));
-		while (1); // don't do anything more
-	}
-
-
 	// Initialization
 	initButtons();
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
-
-	//for (byte i = 0; i < 6; i++) {
-	//	key.keyByte[i] = 0xFF;
-	//}
 	
 	// Read last state from eeprom
-	//lastFolderNumber = EEPROM.read(memLastDir);
-	//byte lastCardID[10];
-	//size_t lastCardIDlen = 0;
 	EEPROM_readAnything(memLastID, curCardID);
 	EEPROM_readAnything(memLastIDLen, curCardIDlen);
 	EEPROM_readAnything(memLastTrack, lastTrackName);
 
+	Serial.print("Last Card ID Length: ");
+	Serial.println(curCardIDlen);
 	Serial.print("Last Card ID: ");
 	printHex(curCardID, curCardIDlen);
+	Serial.println("");
 	initDir();
 
 	// Restore volume
@@ -169,6 +159,7 @@ void loop() {
 	// Check for new ID card
 	if (rfid.PICC_IsNewCardPresent()) {
 		if (readRfid()) {
+			Serial.println("RFID read...");
 			musicPlayer.stopPlaying();
 			initDir();
 			stopped = false;
@@ -189,8 +180,7 @@ void loop() {
 
 // Read the rfid card id and store in curCardID. if new ID, return true
 bool readRfid() {
-	if (!rfid.PICC_ReadCardSerial())
-		return;
+	if (!rfid.PICC_ReadCardSerial()) return;
 
 	MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
 
@@ -211,19 +201,20 @@ bool readRfid() {
 
 	// Store NUID into nuidPICC array
 	byteCopy(rfid.uid.uidByte, curCardID, rfid.uid.size);
+	curCardIDlen = rfid.uid.size;
 
 	Serial.println(F("The NUID tag is:"));
 	Serial.print(F("In hex: "));
-	printHex(rfid.uid.uidByte, rfid.uid.size);
+	printHex(curCardID, curCardIDlen);
 	Serial.println();
 	Serial.print(F("In dec: "));
-	printDec(rfid.uid.uidByte, rfid.uid.size);
+	printDec(curCardID, curCardIDlen);
 	Serial.println();
 
 	rfid.PICC_HaltA();
 	rfid.PCD_StopCrypto1();
 
-	curCardIDlen = rfid.uid.size;
+
 	return true;
 }
 
@@ -255,20 +246,20 @@ void initDir() {
 	Serial.println(curFolder);
 	
 	// Store current folder number in eeprom
-	//EEPROM.write(memLastDir, curFolderNumber);
 	EEPROM_writeAnything(memLastID, curCardID);
+	EEPROM_writeAnything(memLastIDLen, curCardIDlen);
 }
 
 // write current card ID to curFolder
 static void cardIdtoHex()
 {
 	size_t i = 0;
-	char *tmp = new char[2];
+	char *tmp = new char[3];
 	for (i = 0; i < 10; ++i) {
 		if (i < curCardIDlen) {
 			sprintf(tmp, "%02X", curCardID[i]);
-			curFolder[i * 2] = tmp[1];
-			curFolder[i * 2 + 1] = tmp[2];
+			curFolder[i * 2] = tmp[0];
+			curFolder[i * 2 + 1] = tmp[1];
 		}
 		else {
 			curFolder[i * 2] = '\0';
