@@ -82,12 +82,12 @@ MFRC522 rfid = MFRC522(RFID_SS_PIN, RFID_RST_PIN);
 
 void setup() {
 	Serial.begin(9600);
-	Serial.println("Initializing musicplayer...");
 	SPI.begin();
+
 	rfid.PCD_Init();
 	rfid.PCD_DumpVersionToSerial();
 
-	if (!musicPlayer.begin()) { // initialise the music player
+	if (!musicPlayer.begin()) {
 		Serial.println(F("Couldn't find VS1053, do you have the right pins defined?"));
 		while (1); // don't do anything more
 	}
@@ -158,6 +158,7 @@ void loop() {
 
 	// Check for new ID card
 	if (rfid.PICC_IsNewCardPresent()) {
+		Serial.println("RFID read...");
 		if (readRfid()) {
 			Serial.println("RFID read...");
 			musicPlayer.stopPlaying();
@@ -185,12 +186,12 @@ bool readRfid() {
 	MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
 
 	// Check is the PICC of Classic MIFARE type
-	if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&
+	/*if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&
 		piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
 		piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
 		Serial.println(F("Your tag is not of type MIFARE Classic."));
 		return false;
-	}
+	}*/
 
 	if (byteCmp(curCardID, rfid.uid.uidByte, rfid.uid.size)) return false;
 
@@ -240,6 +241,12 @@ void initDir() {
 	// Read Folder ID 
 	cardIdtoHex();
 
+	if (!SD.exists(curFolder)) {
+		curFolder[6] = '~';
+		curFolder[7] = '1';
+		curFolder[8] = '\0';
+	}
+
 	//printDirectory(SD.open(curFolder),0);
 
 	Serial.print("Current Folder: ");
@@ -255,8 +262,8 @@ static void cardIdtoHex()
 {
 	size_t i = 0;
 	char *tmp = new char[3];
-	for (i = 0; i < 10; ++i) {
-		if (i < curCardIDlen) {
+	for (i = 0; i < 4; ++i) {
+		if (i < curCardIDlen && i < 4) {
 			sprintf(tmp, "%02X", curCardID[i]);
 			curFolder[i * 2] = tmp[0];
 			curFolder[i * 2 + 1] = tmp[1];
@@ -281,19 +288,17 @@ bool playFile() {
 
 	sprintf(f, "%s/%s", curFolder, curFile);
 
-	if (SD.exists(f)) {
-		musicPlayer.startPlayingFile(f);
-
-		Serial.print("Playing '");
-		Serial.print(f);
-		Serial.println("'");
-
-		EEPROM_writeAnything(memLastTrack, curFile);
-		return true;
-	}
-	else {
+	if (!SD.exists(f)) {
 		return false;
 	}
+	musicPlayer.startPlayingFile(f);
+
+	Serial.print("Playing '");
+	Serial.print(f);
+	Serial.println("'");
+
+	EEPROM_writeAnything(memLastTrack, curFile);
+	return true;
 }
 
 // Pause / unpause music
