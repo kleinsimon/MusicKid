@@ -32,9 +32,9 @@
 uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 
 // assignment of buttons in array
-#define btnVolUp 0
+#define btnVolUp 2
 #define btnVolDown 1
-#define btnPause 2
+#define btnPause 0
 #define btnPrev 3
 #define btnNext 4
 
@@ -48,9 +48,9 @@ uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 #define memLastIDLen 45 //10 bytes, rfid card ID
 
 // Amount of DB for volume change, max and min volume (lower value is higher volume)
-#define volChange 5
-#define maxVol 20
-#define minVol 60
+#define volChange 3
+#define maxVol 45
+#define minVol 81
 
 // cycle sleep
 #define loopSleep 10
