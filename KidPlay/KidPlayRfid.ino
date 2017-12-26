@@ -3,6 +3,12 @@
  Created:	09.09.2017 22:19:30
  Author:	Simon Klein (simon.klein@outlook.com)
 */
+#include <require_cpp11.h>
+//#include <MFRC522Hack.h>
+//#include <MFRC522Extended.h>
+//#include <MFRC522Debug.h>
+#include <MFRC522.h>
+#include <deprecated.h>
 #include <EEPROM.h>
 #include <SPI.h>
 #include <Adafruit_VS1053.h>
@@ -16,73 +22,78 @@
 #define SHIELD_DCS    6      // VS1053 Data/command select pin (output)
 #define CARDCS 4     // Card chip select pin
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin
-#define KEEPALIVE 5 //Pin for keep-alive-resistor (~ 150 OHM)
 
-// Pins for the Folder ID Switches. Order is lowest bit to highest bit. The more pins, the more folders can be addressed.
-const uint8_t fidBtnPins[6] = {8,9,10,11,12,13};
+// RFID 522 Pins:
+#define RFID_RST_PIN -1
+#define RFID_SS_PIN 10
 
-// Pins for Buttons
-#define btnPause 3
-#define btnVolUp 1
-#define btnVolDown 2
-#define btnNext 5
-#define btnPrev 4
+// Pins for Buttons: VolUp, VolDown, Pause, Prev, Next
+#define nBtnPins 5
+uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
+
+// assignment of buttons in array
+#define btnVolUp 2
+#define btnVolDown 1
+#define btnPause 0
+#define btnPrev 3
+#define btnNext 4
 
 // Eeprom Adresses
+#define memVolLocked 10	//one byte, Volume locked
 #define memAdrVol 11	//one byte, last volume
 #define memLastDir 12	//one byte, last Dir 
 #define memLastTrack 13	//13 bytes, last Track Name
 #define memLastPos 26	//8 bytes, last Position
+#define memLastID 34 //10 bytes, rfid card ID
+#define memLastIDLen 45 //10 bytes, rfid card ID
 
-// Amount of DB for volume change
-#define volChange 5
-#define maxVol 10
-#define minVol 60
+// Amount of DB for volume change, max and min volume (lower value is higher volume)
+#define volChange 3
+#define maxVol 45
+#define minVol 81
 
 // cycle sleep
 #define loopSleep 10
 
-// Delay before switching to new folder in loops
-#define switchDelay 100
+// cycles to press vol down and up to lock / unlock
+#define lockCyclesMax 60
 
-// Keep-Alive durations
-#define loopKeepAlive 200
-#define keepAliveDuration 50
-
-Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
-
-// Stacks for File search
+// Buffers for File search
 char curFile[13];
 char nearest[13];
 char tmpFile[13];
 
 // Stacks for Button state and Event state
-bool btnState[8];
-bool btnTemp[8];
-bool btnConsumed[8];
+bool btnState[nBtnPins];
+bool btnTemp[nBtnPins];
+bool btnConsumed[nBtnPins];
 
 // State of the player
 bool stopped = false;
 bool paused = false;
+bool locked = false;
+bool lockCombo = false;
 
-int delayTimer = 0;
-
-#if KEEPALIVE > 0
-	int keepAliveTimer = 0;
-	int keepAliveCounter = 0;
-#endif
-
+// Runtime vars
 uint8_t volume = 40;
-uint8_t curFolderNumber = 0;
-uint8_t lastFolderNumber = 0;
+int lockCycles = 0;
 char lastTrackName[13];
-char curFolder[3];
+char curFolder[20];
+byte curCardID[10] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+int curCardIDlen = 4;
+
+// Interface objects for shields
+Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(SHIELD_RESET, SHIELD_CS, SHIELD_DCS, DREQ, CARDCS);
+MFRC522 rfid = MFRC522(RFID_SS_PIN, RFID_RST_PIN);
 
 void setup() {
 	Serial.begin(9600);
-	Serial.println("Initializing musicplayer...");
+	SPI.begin();
 
-	if (!musicPlayer.begin()) { // initialise the music player
+	rfid.PCD_Init();
+	rfid.PCD_DumpVersionToSerial();
+
+	if (!musicPlayer.begin()) {
 		Serial.println(F("Couldn't find VS1053, do you have the right pins defined?"));
 		while (1); // don't do anything more
 	}
@@ -97,76 +108,90 @@ void setup() {
 	musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
 	
 	// Read last state from eeprom
-	lastFolderNumber = EEPROM.read(memLastDir);
-
+	EEPROM_readAnything(memLastID, curCardID);
+	EEPROM_readAnything(memLastIDLen, curCardIDlen);
 	EEPROM_readAnything(memLastTrack, lastTrackName);
 
-	Serial.print("Last Folder Number: ");
-	Serial.println(lastFolderNumber);
+	Serial.print("Last Card ID Length: ");
+	Serial.println(curCardIDlen);
+	Serial.print("Last Card ID: ");
+	printHex(curCardID, curCardIDlen);
+	Serial.println("");
+	initDir();
 
 	// Restore volume
 	setVolume(EEPROM.read(memAdrVol));
 
-	initDir();
-
 	// If same folder as last time, restore track and position
-	if (lastFolderNumber == curFolderNumber) {
-		Serial.print("Last played: ");
-		Serial.println(lastTrackName);
-		strcpy(curFile, lastTrackName);
+	Serial.print("Last played: ");
+	Serial.println(lastTrackName);
+	strcpy(curFile, lastTrackName);
+	if (playFile()) {
 		long lastPos = 0;
 		EEPROM_readAnything(memLastPos, lastPos);
 		Serial.print("Resuming at : ");
 		Serial.println(lastPos);
-		playFile();
 		musicPlayer.pausePlaying(true);
 		musicPlayer.currentTrack.seek(lastPos);
 		musicPlayer.pausePlaying(false);
 	}
-
-#if KEEPALIVE > 0
-	pinMode(KEEPALIVE, OUTPUT);
-	toggleKeepAlive(true);
-#endif
 }
 
 // Main loop
 void loop() {
+	
+	// Check action buttons
 	readButtons();
 
-	if (checkEvent(btnPause)) {
-		togglePause();
-	}
-	else if (checkEvent(btnNext)) {
-		musicPlayer.stopPlaying();
-	}
-	else if (checkEvent(btnPrev)) {
-		musicPlayer.stopPlaying();
-		findPrevFile();
-		playFile();
-	}
-	else if (checkEvent(btnVolUp)) {
-		raiseVolume(-volChange);
-	}
-	else if (checkEvent(btnVolDown)) {
-		raiseVolume(volChange);
-	}
+	// check for lock combo
 
-	int fidState = readFidState();
-	if (fidState != curFolderNumber) {
-		if (delayTimer > switchDelay) {
-			musicPlayer.stopPlaying();
-			curFolderNumber = fidState;
-			initDir();
-			stopped = false;
-			delayTimer = 0;
-		} 
-		else {
-			delayTimer++;
+	if (btnState[btnVolUp] && btnState[btnVolDown]) {
+		if (lockCycles == lockCyclesMax) {
+			locked = !locked;
+			Serial.print("Locked State changed: ");
+			Serial.println(locked);
+			lockCycles = 0;
 		}
+		if (lockCombo)
+			lockCycles++;
+		lockCombo = true;
 	}
 	else {
-		delayTimer = 0;
+		lockCombo = false;
+		lockCycles = 0;
+	}
+
+	if (!locked) {
+		if (checkEvent(btnPause)) {
+			togglePause();
+		}
+		else if (checkEvent(btnNext)) {
+			musicPlayer.stopPlaying();
+			findNextFile();
+			playFile();
+		}
+		else if (checkEvent(btnPrev)) {
+			musicPlayer.stopPlaying();
+			findPrevFile();
+			playFile();
+		}
+		else if (checkEvent(btnVolUp)) {
+			raiseVolume(-volChange);
+		}
+		else if (checkEvent(btnVolDown)) {
+			raiseVolume(volChange);
+		}
+	}
+
+	// Check for new ID card
+	if (rfid.PICC_IsNewCardPresent()) {
+		Serial.println("RFID read...");
+		if (readRfid()) {
+			Serial.println("RFID read...");
+			musicPlayer.stopPlaying();
+			initDir();
+			stopped = false;
+		}
 	}
 
 	// play next track if nothing plays
@@ -178,50 +203,104 @@ void loop() {
 		EEPROM_writeAnything(memLastPos, musicPlayer.currentTrack.position());
 	}
 
-#if KEEPALIVE < 0
-	if (keepAliveTimer > loopKeepAlive) {
-		if (keepAliveCounter == 0) {
-			toggleKeepAlive(true);
-		}
-		keepAliveCounter++;
-		if (keepAliveCounter > keepAliveDuration) {
-			keepAliveCounter = 0;
-			keepAliveTimer = 0;
-			toggleKeepAlive(false);
-		}
-	}
-	keepAliveTimer++;
-#endif
-
 	delay(loopSleep);
 }
 
-void initDir() {
+// Read the rfid card id and store in curCardID. if new ID, return true
+bool readRfid() {
+	if (!rfid.PICC_ReadCardSerial()) return;
 
+	MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
+
+	// Check is the PICC of Classic MIFARE type
+	/*if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&
+		piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
+		piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
+		Serial.println(F("Your tag is not of type MIFARE Classic."));
+		return false;
+	}*/
+
+	if (byteCmp(curCardID, rfid.uid.uidByte, rfid.uid.size)) return false;
+
+	Serial.print(F("PICC type: "));
+	Serial.println(rfid.PICC_GetTypeName(piccType));
+
+	Serial.println(F("A new card has been detected."));
+
+	// Store NUID into nuidPICC array
+	byteCopy(rfid.uid.uidByte, curCardID, rfid.uid.size);
+	curCardIDlen = rfid.uid.size;
+
+	Serial.println(F("The NUID tag is:"));
+	Serial.print(F("In hex: "));
+	printHex(curCardID, curCardIDlen);
+	Serial.println();
+	Serial.print(F("In dec: "));
+	printDec(curCardID, curCardIDlen);
+	Serial.println();
+
+	rfid.PICC_HaltA();
+	rfid.PCD_StopCrypto1();
+
+
+	return true;
+}
+
+// Compare first n bytes of arrays b1 and b2
+bool byteCmp(byte b1[], byte b2[], int n) {
+	bool r = true;
+
+	for (int i = 0; i < n; i++)
+		r &= b1[i] == b2[i];
+
+	return r;
+}
+
+// Copy n bytes of array b1 to b2
+void byteCopy(byte b1[], byte *b2, int n) {
+	for (int i = 0; i < n; i++)
+		b2[i] = b1[i];
+}
+
+void initDir() {
 	strcpy(curFile, "");
 
-	// Read Folder ID from GPIOs
-	curFolderNumber = readFidState();
-	sprintf(curFolder, "%d", curFolderNumber);
+	// Read Folder ID 
+	cardIdtoHex();
+
+	if (!SD.exists(curFolder)) {
+		curFolder[6] = '~';
+		curFolder[7] = '1';
+		curFolder[8] = '\0';
+	}
 
 	//printDirectory(SD.open(curFolder),0);
 
-	Serial.print("Current Folder Number: ");
-	Serial.println(curFolderNumber);
 	Serial.print("Current Folder: ");
 	Serial.println(curFolder);
-
+	
 	// Store current folder number in eeprom
-	EEPROM.write(memLastDir, curFolderNumber);
+	EEPROM_writeAnything(memLastID, curCardID);
+	EEPROM_writeAnything(memLastIDLen, curCardIDlen);
 }
 
-#if KEEPALIVE > 0
-void toggleKeepAlive(bool kaState) {
-	digitalWrite(KEEPALIVE, kaState);
-	Serial.print("Keepalive: ");
-	Serial.println(kaState);
+// write current card ID to curFolder
+static void cardIdtoHex()
+{
+	size_t i = 0;
+	char *tmp = new char[3];
+	for (i = 0; i < 4; ++i) {
+		if (i < curCardIDlen && i < 4) {
+			sprintf(tmp, "%02X", curCardID[i]);
+			curFolder[i * 2] = tmp[0];
+			curFolder[i * 2 + 1] = tmp[1];
+		}
+		else {
+			curFolder[i * 2] = '\0';
+			break;
+		}
+	}
 }
-#endif
 
 //Check for an event and consume it
 bool checkEvent(uint8_t pin) {
@@ -231,11 +310,14 @@ bool checkEvent(uint8_t pin) {
 }
 
 //Play the current file in the current folder. Store filename in eeprom
-void playFile() {
-	char f[20];
+bool playFile() {
+	char f[35];
 
 	sprintf(f, "%s/%s", curFolder, curFile);
 
+	if (!SD.exists(f)) {
+		return false;
+	}
 	musicPlayer.startPlayingFile(f);
 
 	Serial.print("Playing '");
@@ -243,6 +325,7 @@ void playFile() {
 	Serial.println("'");
 
 	EEPROM_writeAnything(memLastTrack, curFile);
+	return true;
 }
 
 // Pause / unpause music
@@ -272,41 +355,25 @@ void raiseVolume(uint8_t dif) {
 	setVolume(volume + dif);
 }
 
-// Initialize all Buttons on the shield and the FID-Buttons on arduino
+// Initialize all Buttons on arduino
 void initButtons() {
-	for (uint8_t i = 0; i < 8; i++)
-		musicPlayer.GPIO_pinMode(i, INPUT);
-	for (uint8_t i = 0; i < sizeof(fidBtnPins); i++)
-		pinMode(fidBtnPins[i], INPUT_PULLUP);
+	for (uint8_t i = 0; i < nBtnPins; i++)
+		pinMode(btnPins[i], INPUT_PULLUP);
 }
 
 // Read the shield buttons state and reset event state
 void readButtons() {
-	for (uint8_t i = 0; i < 8; i++) {
+	for (uint8_t i = 0; i < nBtnPins; i++) {
 		btnTemp[i] = btnState[i];
-		btnState[i] = musicPlayer.GPIO_digitalRead(i);
+		btnState[i] = !digitalRead(btnPins[i]);
 		if (btnTemp[i] && !btnState[i] && btnConsumed[i]) btnConsumed[i] = false; //Reset if now not pressed
 	}
-}
-
-// Read the fid state to a number. Low means pressed (internal pullup)
-int readFidState() {
-	bool fidTmp[6];
-	int res = 0;
-	//Serial.print("FID State: ");
-	for (uint8_t i = 0; i < sizeof(fidBtnPins); i++) {
-		bitWrite(res, i, digitalRead(fidBtnPins[i]));
-		//Serial.print(!digitalRead(fidBtnPins[i]));
-
-	}
-	//Serial.println(" ");
-	return res;
 }
 
 // Print the FID-State to Serial
 void plotBtnState() {
 	Serial.print("Buttons: [");
-	for (uint8_t i = 0; i < 8; i++)
+	for (uint8_t i = 0; i < nBtnPins; i++)
 		Serial.print(btnState[i]);
 	Serial.println("]");
 }
@@ -455,5 +522,25 @@ void printDirectory(File dir, int numTabs) {
 			Serial.println(entry.size(), DEC);
 		}
 		entry.close();
+	}
+}
+
+/**
+* Helper routine to dump a byte array as hex values to Serial.
+*/
+void printHex(byte *buffer, byte bufferSize) {
+	for (byte i = 0; i < bufferSize; i++) {
+		Serial.print(buffer[i] < 0x10 ? " 0" : " ");
+		Serial.print(buffer[i], HEX);
+	}
+}
+
+/**
+* Helper routine to dump a byte array as dec values to Serial.
+*/
+void printDec(byte *buffer, byte bufferSize) {
+	for (byte i = 0; i < bufferSize; i++) {
+		Serial.print(buffer[i] < 0x10 ? " 0" : " ");
+		Serial.print(buffer[i], DEC);
 	}
 }
