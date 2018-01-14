@@ -49,7 +49,7 @@ uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 
 // Amount of DB for volume change, max and min volume (lower value is higher volume)
 #define volChange 3
-#define maxVol 45
+#define maxVol 20
 #define minVol 81
 
 // cycle sleep
@@ -148,6 +148,7 @@ void loop() {
 	if (btnState[btnVolUp] && btnState[btnVolDown]) {
 		if (lockCycles == lockCyclesMax) {
 			locked = !locked;
+			beep();
 			Serial.print("Locked State changed: ");
 			Serial.println(locked);
 			lockCycles = 0;
@@ -181,16 +182,16 @@ void loop() {
 		else if (checkEvent(btnVolDown)) {
 			raiseVolume(volChange);
 		}
-	}
 
-	// Check for new ID card
-	if (rfid.PICC_IsNewCardPresent()) {
-		Serial.println("RFID read...");
-		if (readRfid()) {
+		// Check for new ID card
+		if (rfid.PICC_IsNewCardPresent()) {
 			Serial.println("RFID read...");
-			musicPlayer.stopPlaying();
-			initDir();
-			stopped = false;
+			if (readRfid()) {
+				Serial.println("RFID read...");
+				musicPlayer.stopPlaying();
+				initDir();
+				stopped = false;
+			}
 		}
 	}
 
@@ -282,6 +283,19 @@ void initDir() {
 	// Store current folder number in eeprom
 	EEPROM_writeAnything(memLastID, curCardID);
 	EEPROM_writeAnything(memLastIDLen, curCardIDlen);
+}
+
+static void beep() {
+	bool os = musicPlayer.paused();
+	if (!os) {
+		musicPlayer.pausePlaying(true);
+	}
+	musicPlayer.sineTest(0x88, 50);
+	setVolume(volume);
+	Serial.println("Beep!");
+	if (!os) {
+		musicPlayer.pausePlaying(false);
+	}
 }
 
 // write current card ID to curFolder
