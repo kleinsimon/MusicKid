@@ -56,7 +56,8 @@ uint8_t btnPins[nBtnPins] = {12,13,11,8,9};
 #define loopSleep 10
 
 // cycles to press vol down and up to lock / unlock
-#define lockCyclesMax 60
+#define lockCyclesMax 50
+#define backCyclesMax 50
 
 // Buffers for File search
 char curFile[13];
@@ -66,7 +67,7 @@ char tmpFile[13];
 // Stacks for Button state and Event state
 bool btnState[nBtnPins];
 bool btnTemp[nBtnPins];
-bool btnConsumed[nBtnPins];
+//bool btnConsumed[nBtnPins];
 
 // State of the player
 bool stopped = false;
@@ -77,6 +78,7 @@ bool lockCombo = false;
 // Runtime vars
 uint8_t volume = 40;
 int lockCycles = 0;
+int backCycles = 0;
 char lastTrackName[13];
 char curFolder[20];
 byte curCardID[10] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
@@ -161,6 +163,17 @@ void loop() {
 		lockCombo = false;
 		lockCycles = 0;
 	}
+	if (btnState[btnPrev]) {
+		backCycles++;
+		if (backCycles > backCyclesMax) {
+			musicPlayer.stopPlaying();
+			strcpy(curFile, "");
+			findNextFile();
+			playFile();
+			backCycles = 0;
+			btnState[btnPrev] = false;
+		}
+	}
 
 	if (!locked) {
 		if (checkEvent(btnPause)) {
@@ -175,6 +188,7 @@ void loop() {
 			musicPlayer.stopPlaying();
 			findPrevFile();
 			playFile();
+			backCycles = 0;
 		}
 		else if (checkEvent(btnVolUp)) {
 			raiseVolume(-volChange);
@@ -316,11 +330,9 @@ static void cardIdtoHex()
 	}
 }
 
-//Check for an event and consume it
+//Check if button is released
 bool checkEvent(uint8_t pin) {
-	bool r = btnState[pin] && !btnConsumed[pin];
-	if (r)	btnConsumed[pin] = true;
-	return r;
+	return !btnState[pin] && btnTemp[pin];
 }
 
 //Play the current file in the current folder. Store filename in eeprom
@@ -380,7 +392,7 @@ void readButtons() {
 	for (uint8_t i = 0; i < nBtnPins; i++) {
 		btnTemp[i] = btnState[i];
 		btnState[i] = !digitalRead(btnPins[i]);
-		if (btnTemp[i] && !btnState[i] && btnConsumed[i]) btnConsumed[i] = false; //Reset if now not pressed
+		//if (btnTemp[i] && !btnState[i] && btnConsumed[i]) btnConsumed[i] = false; //Reset if now not pressed
 	}
 }
 
